@@ -19,6 +19,7 @@ package cruntime
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path"
@@ -495,4 +496,31 @@ func crioImagesPreloaded(runner command.Runner, images []string) bool {
 // ImagesPreloaded returns true if all images have been preloaded
 func (r *CRIO) ImagesPreloaded(images []string) bool {
 	return crioImagesPreloaded(r.Runner, images)
+}
+
+// UpdateCRIONet updates CRIO CNI network configuration and restarts it
+func UpdateCRIONet(r CommandRunner, cidr string) error {
+        klog.Infof("Updating CRIO to use CIDR: %q", cidr)
+        ip, net, err := net.ParseCIDR(cidr)
+        if err != nil {
+                return errors.Wrap(err, "parse cidr")
+        }
+
+        oldNet := "10.88.0.0/16"
+        oldGw := "10.88.0.1"
+
+        newNet := cidr
+
+        // Assume gateway is first IP in netmask (10.244.0.1, for instance)
+        newGw := ip.Mask(net.Mask)
+        newGw[3]++
+
+        // Update subnets used by 100-crio-bridge.conf & 87-podman-bridge.conflist
+        // avoids: "Error adding network: failed to set bridge addr: could not add IP address to \"cni0\": permission denied"
+        sed := fmt.Sprintf("sed -i -e s#%s#%s# -e s#%s#%s# /etc/cni/net.d/*bridge*", oldNet, newNet, oldGw, newGw)
+        if _, err := r.RunCmd(exec.Command("sudo", "/bin/bash", "-c", sed)); err != nil {
+                klog.Errorf("netconf update failed: %v", err)
+        }
+
+        return sysinit.New(r).Restart("crio")
 }
